@@ -8,83 +8,66 @@ using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Client;
 using Microsoft.Xrm.Sdk.Deployment;
 using Microsoft.Xrm.Sdk.Deployment.Proxy;
+using Microsoft.Xrm.Sdk.Discovery;
 using Microsoft.Xrm.Sdk.Query;
 
 namespace CrmSolutionsInfoHelper
 {
     public class Program
     {
-        private static List<string> nonexistentOrganizations = new List<string>();
-
         public static void Main(string[] args)
         {
-            var organizationsString = ConfigurationManager.AppSettings["Organizations"];
-            var organizations = new List<string>();
-            if (string.IsNullOrWhiteSpace(organizationsString))
+            try
             {
-                Console.Write("Enter Organization Name: ");
-                var input = Console.ReadLine();
-                organizations.Add(input);
-                Console.WriteLine();
-            }
-            else
-            {
-                organizations = organizationsString.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-            }
+                var crmUrl = ConfigurationManager.AppSettings["CrmUrl"];
+                var url = new Uri(crmUrl + "/XRMServices/2011/Discovery.svc");
+                var config = ServiceConfigurationFactory.CreateConfiguration<IDiscoveryService>(url);
+                var credentials = new ClientCredentials();
+                credentials.Windows.ClientCredential = CredentialCache.DefaultNetworkCredentials;
+                var discoveryService = new DiscoveryServiceProxy(config, credentials);
+                discoveryService.Authenticate();
+                var request = new RetrieveOrganizationsRequest();
+                var response = (RetrieveOrganizationsResponse)discoveryService.Execute(request);
 
-            foreach (var organization in organizations)
-            {
-                GetOrganizationInfo(organization);
+                foreach (var detail in response.Details)
+                {
+                    var organizationServiceUrl = detail.Endpoints[EndpointType.OrganizationService];
+                    var organizationName = detail.UniqueName;
+                    GetOrganizationInfo(organizationName, organizationServiceUrl);
+                }
+                Console.WriteLine("Press any key to close the window.");
+                Console.ReadKey();
             }
-
-            if (nonexistentOrganizations.Count > 0)
+            catch (Exception ex)
             {
-                Console.WriteLine();
-                Console.WriteLine("------------------------------");
-                Console.WriteLine("--NONEXISTENT ORGANIZATIONS--");
-                Console.WriteLine(string.Join(",", nonexistentOrganizations));
+                Console.WriteLine("Error occured." + Environment.NewLine + ex.ToString());
             }
-            Console.ReadKey();
         }
 
-        private static void GetOrganizationInfo(string organizationName)
+        private static void GetOrganizationInfo(string organizationName, string organizationServiceUrl)
         {
             var crmUrl = ConfigurationManager.AppSettings["CrmUrl"];
-            if (!string.IsNullOrWhiteSpace(crmUrl))
+            var uri = new Uri(crmUrl + "/XRMDeployment/2011/Deployment.svc");
+            var deploymentService = ProxyClientHelper.CreateClient(uri);
+            deploymentService.ClientCredentials.Windows.ClientCredential = CredentialCache.DefaultNetworkCredentials;
+
+            var orgRetRequest = new RetrieveRequest();
+            orgRetRequest.EntityType = DeploymentEntityType.Organization;
+
+            orgRetRequest.InstanceTag = new EntityInstanceId();
+            orgRetRequest.InstanceTag.Name = organizationName;
+
+            try
             {
-                var uri = new Uri(crmUrl + "/XRMDeployment/2011/Deployment.svc");
-                var deploymentService = ProxyClientHelper.CreateClient(uri);
-                deploymentService.ClientCredentials.Windows.ClientCredential = CredentialCache.DefaultNetworkCredentials;
-
-                var orgRetRequest = new RetrieveRequest();
-                orgRetRequest.EntityType = DeploymentEntityType.Organization;
-
-                orgRetRequest.InstanceTag = new EntityInstanceId();
-                orgRetRequest.InstanceTag.Name = organizationName;
-
-                var organizationExists = true;
-                try
-                {
-                    var response = (RetrieveResponse)deploymentService.Execute(orgRetRequest);
-                    Console.WriteLine("---------------" + organizationName.ToUpper() + "---------------");
-                    Console.WriteLine("State: " + ((Organization)response.Entity).State.ToString());
-                    Console.WriteLine("Version: " + ((Organization)response.Entity).Version);
-                }
-                catch
-                {
-                    nonexistentOrganizations.Add(organizationName);
-                    organizationExists = false;
-                }
-
-                if (organizationExists)
-                {
-                    var organizationServiceUrl = crmUrl + "/" + organizationName + "/XRMServices/2011/Organization.svc";
-                    GetSolutionsInfo(organizationServiceUrl);
-                }
+                var response = (RetrieveResponse)deploymentService.Execute(orgRetRequest);
+                Console.WriteLine("---------------" + organizationName + "---------------");
+                Console.WriteLine("State: " + ((Organization)response.Entity).State.ToString());
+                Console.WriteLine("Version: " + ((Organization)response.Entity).Version);
+                GetSolutionsInfo(organizationServiceUrl);
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine("CRM url is empty");
+                Console.WriteLine("Unable to get organization solutions info." + Environment.NewLine + ex.ToString());
             }
         }
 
@@ -105,6 +88,7 @@ namespace CrmSolutionsInfoHelper
                 try
                 {
                     var queryPublisher = new QueryExpression("publisher");
+                    queryPublisher.ColumnSet = new ColumnSet(true);
                     queryPublisher.Criteria.AddCondition("uniquename", ConditionOperator.Equal, publisherName);
                     var publishers = service.RetrieveMultiple(queryPublisher);
                     if (publishers.Entities.Count > 0)
